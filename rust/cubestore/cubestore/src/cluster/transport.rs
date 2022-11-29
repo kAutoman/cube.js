@@ -120,6 +120,7 @@ impl MetaStoreTransportImpl {
 
 #[async_trait]
 impl MetaStoreTransport for MetaStoreTransportImpl {
+    #[tracing::instrument(level = "trace", skip(self))]
     async fn meta_store_call(&self, m: NetworkMessage) -> Result<NetworkMessage, CubeError> {
         let meta_remote_addr = self
             .config

@@ -586,6 +586,7 @@ impl Cluster for ClusterImpl {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     async fn process_metastore_message(&self, m: NetworkMessage) -> NetworkMessage {
         match m {
             NetworkMessage::MetaStoreCall(method_call) => {
