@@ -702,7 +702,6 @@ impl RocksStore {
             running_count = running_count,
             queue_running_count = queue_running_count
         );
-        let span_to_move = span.clone();
         let _span_holder = span.enter();
 
         let db = self.db.clone();
@@ -714,11 +713,11 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<(R, Vec<MetaStoreEvent>), CubeError>>();
 
+        let inner_span = tracing::trace_span!("inner_write_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("store write operation", Duration::from_millis(100));
-                let span = tracing::trace_span!(parent: &span_to_move, "inner_write_operation");
-                let span_holder = span.enter();
+                let span_holder = inner_span.enter();
 
                 let mut batch = BatchPipe::new(db_to_send.as_ref());
                 let snapshot = db_to_send.snapshot();
@@ -916,7 +915,6 @@ impl RocksStore {
             running_count = running_count,
             queue_running_count = queue_running_count
         );
-        let span_to_move = span.clone();
         let _span_holder = span.enter();
 
         let mem_seq = MemorySequence::new(self.seq_store.clone());
@@ -926,12 +924,12 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<R, CubeError>>();
 
+        let inner_span =
+            tracing::trace_span!("inner_metastore_read_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
-                let span =
-                    tracing::trace_span!(parent: &span_to_move, "inner_metastore_read_operation");
-                let span_holder = span.enter();
+                let span_holder = inner_span.enter();
 
                 let snapshot = db_to_send.snapshot();
                 let res = f(DbTableRef {
