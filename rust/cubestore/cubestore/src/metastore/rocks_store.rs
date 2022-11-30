@@ -21,6 +21,7 @@ use std::io::{Cursor, Write};
 use crate::metastore::snapshot_info::SnapshotInfo;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{env, mem, time};
@@ -492,6 +493,27 @@ macro_rules! meta_store_table_impl {
     };
 }
 
+struct CounterHolder {
+    counter: Arc<AtomicUsize>,
+}
+
+impl CounterHolder {
+    pub fn lock(counter: Arc<AtomicUsize>) -> (Self, usize) {
+        let n = counter.fetch_add(1, Ordering::Relaxed);
+        (Self { counter }, n)
+    }
+
+    pub fn unlock(&self) -> usize {
+        self.counter.fetch_sub(1, Ordering::Relaxed)
+    }
+}
+
+impl Drop for CounterHolder {
+    fn drop(&mut self) {
+        self.unlock();
+    }
+}
+
 pub trait RocksStoreDetails: Send + Sync {
     fn open_db(&self, path: &Path) -> Result<DB, CubeError>;
 
@@ -519,6 +541,9 @@ pub struct RocksStore {
     >,
     _rw_loop_join_handle: Arc<AbortingJoinHandle<()>>,
     details: Arc<dyn RocksStoreDetails>,
+    running_count: Arc<AtomicUsize>,
+    queue_running_count: Arc<AtomicUsize>,
+    out_of_queue_running_count: Arc<AtomicUsize>,
 }
 
 pub fn check_if_exists(name: &String, existing_keys_len: usize) -> Result<(), CubeError> {
@@ -590,6 +615,9 @@ impl RocksStore {
             rw_loop_tx,
             _rw_loop_join_handle: Arc::new(AbortingJoinHandle::new(join_handle)),
             details,
+            running_count: Arc::new(AtomicUsize::new(0)),
+            queue_running_count: Arc::new(AtomicUsize::new(0)),
+            out_of_queue_running_count: Arc::new(AtomicUsize::new(0)),
         };
 
         Ok(meta_store)
@@ -665,6 +693,18 @@ impl RocksStore {
             + 'static,
         R: Send + Sync + 'static,
     {
+        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let (_queue_running_lock, queue_running_count) =
+            CounterHolder::lock(self.queue_running_count.clone());
+
+        let span = tracing::trace_span!(
+            "queue_write_operation",
+            running_count = running_count,
+            queue_running_count = queue_running_count
+        );
+        let span_to_move = span.clone();
+        let _span_holder = span.enter();
+
         let db = self.db.clone();
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = db.clone();
@@ -677,7 +717,7 @@ impl RocksStore {
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("store write operation", Duration::from_millis(100));
-                let span = tracing::trace_span!("metastore write operation");
+                let span = tracing::trace_span!(parent: &span_to_move, "inner_write_operation");
                 let span_holder = span.enter();
 
                 let mut batch = BatchPipe::new(db_to_send.as_ref());
@@ -867,6 +907,18 @@ impl RocksStore {
         F: for<'a> FnOnce(DbTableRef<'a>) -> Result<R, CubeError> + Send + Sync + 'static,
         R: Send + Sync + 'static,
     {
+        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let (_queue_running_lock, queue_running_count) =
+            CounterHolder::lock(self.queue_running_count.clone());
+
+        let span = tracing::trace_span!(
+            "queue_read_operation",
+            running_count = running_count,
+            queue_running_count = queue_running_count
+        );
+        let span_to_move = span.clone();
+        let _span_holder = span.enter();
+
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = self.db.clone();
         let store_name = self.details.get_name();
@@ -877,7 +929,8 @@ impl RocksStore {
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
-                let span = tracing::trace_span!("metastore read operation");
+                let span =
+                    tracing::trace_span!(parent: &span_to_move, "inner_metastore_read_operation");
                 let span_holder = span.enter();
 
                 let snapshot = db_to_send.snapshot();
@@ -907,6 +960,9 @@ impl RocksStore {
         .instrument(tracing::trace_span!("spawn_blocking"))
         .await?;
 
+        self.running_count.fetch_sub(1, Ordering::Relaxed);
+        self.queue_running_count.fetch_sub(1, Ordering::Relaxed);
+
         rx.await?
     }
 
@@ -918,11 +974,23 @@ impl RocksStore {
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = self.db.clone();
 
+        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let (_out_of_queue_running_lock, out_of_queue_running_count) =
+            CounterHolder::lock(self.out_of_queue_running_count.clone());
+
+        let span = tracing::trace_span!(
+            "out_of_queue_read_operation",
+            running_count = running_count,
+            out_of_queue_running_count = out_of_queue_running_count
+        );
+        let _span_holder = span.enter();
+
         cube_ext::spawn_blocking(move || {
             let db_span = warn_long(
                 "metastore read operation out of queue",
                 Duration::from_millis(100),
             );
+
             let span = tracing::trace_span!("metastore read operation out of queue");
             let span_holder = span.enter();
 
