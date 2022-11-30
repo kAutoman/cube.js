@@ -694,15 +694,10 @@ impl RocksStore {
         R: Send + Sync + 'static,
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
-        let (_queue_running_lock, queue_running_count) =
-            CounterHolder::lock(self.queue_running_count.clone());
 
-        let span = tracing::trace_span!(
-            "queue_write_operation",
-            running_count = running_count,
-            queue_running_count = queue_running_count
-        );
-        let _span_holder = span.enter();
+        if running_count > 200 {
+            log::warn!("meta store running count {}", running_count);
+        }
 
         let db = self.db.clone();
         let mem_seq = MemorySequence::new(self.seq_store.clone());
@@ -713,10 +708,10 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<(R, Vec<MetaStoreEvent>), CubeError>>();
 
-        let inner_span = tracing::trace_span!("inner_write_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("store write operation", Duration::from_millis(100));
+                let inner_span = tracing::trace_span!("inner_write_operation");
                 let span_holder = inner_span.enter();
 
                 let mut batch = BatchPipe::new(db_to_send.as_ref());
@@ -907,15 +902,10 @@ impl RocksStore {
         R: Send + Sync + 'static,
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
-        let (_queue_running_lock, queue_running_count) =
-            CounterHolder::lock(self.queue_running_count.clone());
 
-        let span = tracing::trace_span!(
-            "queue_read_operation",
-            running_count = running_count,
-            queue_running_count = queue_running_count
-        );
-        let _span_holder = span.enter();
+        if running_count > 200 {
+            log::warn!("meta store running count {}", running_count);
+        }
 
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = self.db.clone();
@@ -924,11 +914,10 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<R, CubeError>>();
 
-        let inner_span =
-            tracing::trace_span!("inner_metastore_read_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
+                let inner_span = tracing::trace_span!("inner_metastore_read_operation");
                 let span_holder = inner_span.enter();
 
                 let snapshot = db_to_send.snapshot();
@@ -958,9 +947,6 @@ impl RocksStore {
         .instrument(tracing::trace_span!("spawn_blocking"))
         .await?;
 
-        self.running_count.fetch_sub(1, Ordering::Relaxed);
-        self.queue_running_count.fetch_sub(1, Ordering::Relaxed);
-
         rx.await?
     }
 
@@ -973,15 +959,10 @@ impl RocksStore {
         let db_to_send = self.db.clone();
 
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
-        let (_out_of_queue_running_lock, out_of_queue_running_count) =
-            CounterHolder::lock(self.out_of_queue_running_count.clone());
 
-        let span = tracing::trace_span!(
-            "out_of_queue_read_operation",
-            running_count = running_count,
-            out_of_queue_running_count = out_of_queue_running_count
-        );
-        let _span_holder = span.enter();
+        if running_count > 200 {
+            log::warn!("meta store running count {}", running_count);
+        }
 
         cube_ext::spawn_blocking(move || {
             let db_span = warn_long(
