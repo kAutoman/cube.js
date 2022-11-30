@@ -21,7 +21,7 @@ use std::io::{Cursor, Write};
 use crate::metastore::snapshot_info::SnapshotInfo;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use std::{env, mem, time};
@@ -494,16 +494,16 @@ macro_rules! meta_store_table_impl {
 }
 
 struct CounterHolder {
-    counter: Arc<AtomicUsize>,
+    counter: Arc<AtomicI64>,
 }
 
 impl CounterHolder {
-    pub fn lock(counter: Arc<AtomicUsize>) -> (Self, usize) {
+    pub fn lock(counter: Arc<AtomicI64>) -> (Self, i64) {
         let n = counter.fetch_add(1, Ordering::Relaxed);
         (Self { counter }, n)
     }
 
-    pub fn unlock(&self) -> usize {
+    pub fn unlock(&self) -> i64 {
         self.counter.fetch_sub(1, Ordering::Relaxed)
     }
 }
@@ -541,9 +541,9 @@ pub struct RocksStore {
     >,
     _rw_loop_join_handle: Arc<AbortingJoinHandle<()>>,
     details: Arc<dyn RocksStoreDetails>,
-    running_count: Arc<AtomicUsize>,
-    queue_running_count: Arc<AtomicUsize>,
-    out_of_queue_running_count: Arc<AtomicUsize>,
+    running_count: Arc<AtomicI64>,
+    queue_running_count: Arc<AtomicI64>,
+    out_of_queue_running_count: Arc<AtomicI64>,
 }
 
 pub fn check_if_exists(name: &String, existing_keys_len: usize) -> Result<(), CubeError> {
@@ -615,9 +615,9 @@ impl RocksStore {
             rw_loop_tx,
             _rw_loop_join_handle: Arc::new(AbortingJoinHandle::new(join_handle)),
             details,
-            running_count: Arc::new(AtomicUsize::new(0)),
-            queue_running_count: Arc::new(AtomicUsize::new(0)),
-            out_of_queue_running_count: Arc::new(AtomicUsize::new(0)),
+            running_count: Arc::new(AtomicI64::new(0)),
+            queue_running_count: Arc::new(AtomicI64::new(0)),
+            out_of_queue_running_count: Arc::new(AtomicI64::new(0)),
         };
 
         Ok(meta_store)
