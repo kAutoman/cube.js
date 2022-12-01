@@ -542,8 +542,6 @@ pub struct RocksStore {
     _rw_loop_join_handle: Arc<AbortingJoinHandle<()>>,
     details: Arc<dyn RocksStoreDetails>,
     running_count: Arc<AtomicI64>,
-    queue_running_count: Arc<AtomicI64>,
-    out_of_queue_running_count: Arc<AtomicI64>,
 }
 
 pub fn check_if_exists(name: &String, existing_keys_len: usize) -> Result<(), CubeError> {
@@ -616,8 +614,6 @@ impl RocksStore {
             _rw_loop_join_handle: Arc::new(AbortingJoinHandle::new(join_handle)),
             details,
             running_count: Arc::new(AtomicI64::new(0)),
-            queue_running_count: Arc::new(AtomicI64::new(0)),
-            out_of_queue_running_count: Arc::new(AtomicI64::new(0)),
         };
 
         Ok(meta_store)
@@ -901,7 +897,7 @@ impl RocksStore {
         F: for<'a> FnOnce(DbTableRef<'a>) -> Result<R, CubeError> + Send + Sync + 'static,
         R: Send + Sync + 'static,
     {
-        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let (running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
 
         if running_count > 200 {
             log::warn!("meta store running count {}", running_count);
@@ -914,10 +910,10 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<R, CubeError>>();
 
+        let inner_span = tracing::trace_span!("inner_metastore_read_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
-                let inner_span = tracing::trace_span!("inner_metastore_read_operation");
                 let span_holder = inner_span.enter();
 
                 let snapshot = db_to_send.snapshot();
@@ -946,8 +942,10 @@ impl RocksStore {
         })
         .instrument(tracing::trace_span!("spawn_blocking"))
         .await?;
+        running_lock.unlock();
 
-        rx.await?
+        rx.instrument(tracing::trace_span!("awaiting_response"))
+            .await?
     }
 
     pub async fn read_operation_out_of_queue<F, R>(&self, f: F) -> Result<R, CubeError>
