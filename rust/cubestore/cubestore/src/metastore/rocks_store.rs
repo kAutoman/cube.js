@@ -755,7 +755,9 @@ impl RocksStore {
         })
         .instrument(tracing::trace_span!("spawn_blocking"))
         .await?;
-        let (spawn_res, events) = rx.await??;
+        let (spawn_res, events) = rx
+            .instrument(tracing::trace_span!("awaiting_response"))
+            .await??;
 
         self.write_notify.notify_waiters();
 
