@@ -704,10 +704,12 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<(R, Vec<MetaStoreEvent>), CubeError>>();
 
+        let parent = tracing::Span::current();
+        let inner_span = tracing::trace_span!(parent: &parent, "inner_write_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("store write operation", Duration::from_millis(100));
-                let inner_span = tracing::trace_span!("inner_write_operation");
+                let _p = parent;
                 let span_holder = inner_span.enter();
 
                 let mut batch = BatchPipe::new(db_to_send.as_ref());
@@ -912,10 +914,12 @@ impl RocksStore {
         let rw_loop_sender = self.rw_loop_tx.clone();
         let (tx, rx) = oneshot::channel::<Result<R, CubeError>>();
 
-        let inner_span = tracing::trace_span!("inner_metastore_read_operation");
+        let parent = tracing::Span::current();
+        let inner_span = tracing::trace_span!(parent: &parent, "inner_metastore_read_operation");
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
+                let _p = parent;
                 let span_holder = inner_span.enter();
 
                 let snapshot = db_to_send.snapshot();
