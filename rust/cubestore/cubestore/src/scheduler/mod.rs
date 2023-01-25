@@ -87,6 +87,7 @@ impl SchedulerImpl {
         let scheduler2 = scheduler.clone();
         let scheduler3 = scheduler.clone();
         let scheduler4 = scheduler.clone();
+        let scheduler5 = scheduler.clone();
         vec![
             cube_ext::spawn(async move {
                 let gc_loop = scheduler.gc_loop.clone();
@@ -113,10 +114,10 @@ impl SchedulerImpl {
                 Ok(())
             }),
             cube_ext::spawn(async move {
-                scheduler4
+                scheduler5
                     .chunk_processing_loop
                     .process(
-                        scheduler4.clone(),
+                        scheduler5.clone(),
                         async move |_| Ok(Delay::new(Duration::from_millis(200)).await),
                         async move |s, _| s.process_chunk_events().await,
                     )
