@@ -495,16 +495,26 @@ macro_rules! meta_store_table_impl {
 
 struct CounterHolder {
     counter: Arc<AtomicI64>,
+    locked: bool,
 }
 
 impl CounterHolder {
     pub fn lock(counter: Arc<AtomicI64>) -> (Self, i64) {
         let n = counter.fetch_add(1, Ordering::Relaxed);
-        (Self { counter }, n)
+        (
+            Self {
+                counter,
+                locked: true,
+            },
+            n,
+        )
     }
 
-    pub fn unlock(&self) -> i64 {
-        self.counter.fetch_sub(1, Ordering::Relaxed)
+    pub fn unlock(&mut self) {
+        if self.locked {
+            self.locked = false;
+            self.counter.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -956,7 +966,6 @@ impl RocksStore {
         })
         .instrument(tracing::trace_span!("spawn_blocking"))
         .await?;
-        running_lock.unlock();
 
         let res = rx
             .instrument(tracing::trace_span!("awaiting_response"))
