@@ -4,7 +4,7 @@ use crate::metastore::{MetaStoreEvent, MetaStoreFs};
 use crate::util::aborting_join_handle::AbortingJoinHandle;
 use crate::util::time_span::warn_long;
 
-use crate::CubeError;
+use crate::{app_metrics, CubeError};
 use async_trait::async_trait;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use datafusion::cube_ext;
@@ -695,6 +695,9 @@ impl RocksStore {
             log::warn!("meta store running count {}", running_count);
         }
 
+        app_metrics::METASTORE_QUEUE.report(running_count);
+        let started_at = SystemTime::now();
+
         let db = self.db.clone();
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = db.clone();
@@ -770,7 +773,9 @@ impl RocksStore {
                 }
             }
         }
-
+        if let Ok(time) = started_at.elapsed() {
+            app_metrics::METASTORE_WRITE_OPERATION.report(time.as_millis() as i64);
+        }
         Ok(spawn_res)
     }
 
@@ -907,6 +912,9 @@ impl RocksStore {
             log::warn!("meta store running count {}", running_count);
         }
 
+        app_metrics::METASTORE_QUEUE.report(running_count);
+        let started_at = SystemTime::now();
+
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = self.db.clone();
         let store_name = self.details.get_name();
@@ -950,8 +958,14 @@ impl RocksStore {
         .await?;
         running_lock.unlock();
 
-        rx.instrument(tracing::trace_span!("awaiting_response"))
-            .await?
+        let res = rx
+            .instrument(tracing::trace_span!("awaiting_response"))
+            .await?;
+
+        if let Ok(time) = started_at.elapsed() {
+            app_metrics::METASTORE_READ_OPERATION.report(time.as_millis() as i64);
+        }
+        res
     }
 
     pub async fn read_operation_out_of_queue<F, R>(&self, f: F) -> Result<R, CubeError>
@@ -962,13 +976,9 @@ impl RocksStore {
         let mem_seq = MemorySequence::new(self.seq_store.clone());
         let db_to_send = self.db.clone();
 
-        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let started_at = SystemTime::now();
 
-        if running_count > 200 {
-            log::warn!("meta store running count {}", running_count);
-        }
-
-        cube_ext::spawn_blocking(move || {
+        let res = cube_ext::spawn_blocking(move || {
             let db_span = warn_long(
                 "metastore read operation out of queue",
                 Duration::from_millis(100),
@@ -991,7 +1001,12 @@ impl RocksStore {
             res
         })
         .instrument(tracing::trace_span!("spawn_blocking"))
-        .await?
+        .await?;
+
+        if let Ok(time) = started_at.elapsed() {
+            app_metrics::METASTORE_READ_OUT_QUEUE_OPERATION.report(time.as_millis() as i64);
+        }
+        res
     }
 
     pub fn cleanup_test_store(test_name: &str) {
