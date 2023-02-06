@@ -96,20 +96,17 @@ impl JsWriteStream {
     }
 
     fn reject(&self, err: String) {
-        let poll_wait = std::time::Duration::from_millis(100 as u64);
+        let poll_wait = std::time::Duration::from_millis(100_u64);
         let mut attempts = 0;
 
-        loop {
-            match self.sender.try_send(Err(CubeError::internal(err.clone()))) {
-                Err(TrySendError::Full(_)) => {
-                    attempts += 1;
-                    if attempts >= 50 {
-                        break;
-                    }
-                    std::thread::sleep(poll_wait);
-                }
-                _ => break,
+        while let Err(TrySendError::Full(_)) =
+            self.sender.try_send(Err(CubeError::internal(err.clone())))
+        {
+            attempts += 1;
+            if attempts >= 50 {
+                break;
             }
+            std::thread::sleep(poll_wait);
         }
     }
 }
