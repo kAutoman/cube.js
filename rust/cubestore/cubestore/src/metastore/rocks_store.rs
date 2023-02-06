@@ -916,7 +916,7 @@ impl RocksStore {
         F: for<'a> FnOnce(DbTableRef<'a>) -> Result<R, CubeError> + Send + Sync + 'static,
         R: Send + Sync + 'static,
     {
-        let (running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
+        let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
 
         if running_count > 200 {
             log::warn!("meta store running count {}", running_count);
