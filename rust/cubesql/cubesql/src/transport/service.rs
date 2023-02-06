@@ -64,24 +64,20 @@ pub trait TransportService: Send + Sync + Debug {
         query: V1LoadRequestQuery,
         ctx: AuthContextRef,
         meta_fields: LoadRequestMeta,
-    ) -> Result<Arc<dyn CubeReadStream>, CubeError>;
+    ) -> Result<Box<CubeReadStream>, CubeError>;
 }
 
-pub trait CubeReadStream: Send + Sync + Debug {
-    fn poll_next(&self) -> Result<Option<String>, CubeError>;
-
-    fn reject(&self);
-}
+pub type CubeReadStream = dyn Iterator<Item = Result<String, CubeError>> + Send + Sync;
 
 #[derive(Debug)]
 pub struct CubeDummyStream {}
 
-impl CubeReadStream for CubeDummyStream {
-    fn poll_next(&self) -> Result<Option<String>, CubeError> {
-        panic!("CubeDummyStream.poll_next - can not be called");
-    }
+impl Iterator for CubeDummyStream {
+    type Item = Result<String, CubeError>;
 
-    fn reject(&self) {}
+    fn next(&mut self) -> Option<Self::Item> {
+        panic!("CubeDummyStream.next - can not be called");
+    }
 }
 
 #[derive(Debug)]
@@ -184,7 +180,7 @@ impl TransportService for HttpTransport {
         _query: V1LoadRequestQuery,
         _ctx: AuthContextRef,
         _meta_fields: LoadRequestMeta,
-    ) -> Result<Arc<dyn CubeReadStream>, CubeError> {
+    ) -> Result<Box<CubeReadStream>, CubeError> {
         panic!("Does not work for standalone mode yet");
     }
 }

@@ -7,76 +7,39 @@ use neon::prelude::*;
 
 use crate::utils::bind_method;
 
-use std::sync::{Condvar, Mutex};
+use tokio::sync::mpsc::{
+    channel as mpsc_channel,
+    error::{TryRecvError, TrySendError},
+    Receiver, Sender,
+};
 
-type JsWriter = Arc<Buffer>;
-type BufferChunk = Result<Option<String>, CubeError>;
+type Chunk = Result<String, CubeError>;
 
 #[derive(Debug)]
-struct Buffer {
-    data: Mutex<Vec<BufferChunk>>,
-    data_cv: Condvar,
-    rejected: Mutex<bool>,
+pub struct StreamReader {
+    receiver: Receiver<Chunk>,
 }
 
-impl Buffer {
-    fn new() -> Self {
-        Self {
-            data: Mutex::new(vec![]),
-            data_cv: Condvar::new(),
-            rejected: Mutex::new(false),
+impl Iterator for StreamReader {
+    type Item = Chunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let poll_wait = std::time::Duration::from_millis(50);
+        loop {
+            match self.receiver.try_recv() {
+                Ok(res) => return Some(res),
+                Err(err) => match err {
+                    TryRecvError::Empty => {
+                        std::thread::sleep(poll_wait);
+                    }
+                    TryRecvError::Disconnected => return None,
+                },
+            }
         }
-    }
-
-    fn push(&self, chunk: BufferChunk) -> bool {
-        if *self.rejected.lock().expect("Can't lock") {
-            return false;
-        }
-
-        let mut lock = self.data.lock().expect("Can't lock");
-        // TODO: check size
-        while lock.len() >= 100 {
-            lock = self.data_cv.wait(lock).expect("Can't wait");
-        }
-        lock.push(chunk);
-        self.data_cv.notify_one();
-
-        true
-    }
-
-    fn release(&self, err: String) {
-        let mut lock = self.rejected.lock().expect("Can't lock");
-        if *lock {
-            return;
-        }
-
-        *lock = true;
-
-        let mut lock = self.data.lock().expect("Can't lock");
-        *lock = vec![Err(CubeError::user(err))];
-        self.data_cv.notify_one();
     }
 }
-
-impl CubeReadStream for Buffer {
-    fn poll_next(&self) -> BufferChunk {
-        let mut lock = self.data.lock().expect("Can't lock");
-        while lock.is_empty() {
-            lock = self.data_cv.wait(lock).expect("Can't wait");
-        }
-        let chunk = lock.drain(0..1).last().unwrap();
-        self.data_cv.notify_one();
-
-        chunk
-    }
-
-    fn reject(&self) {
-        self.release("rejected".to_string());
-    }
-}
-
 pub struct JsWriteStream {
-    writer: JsWriter,
+    sender: Sender<Chunk>,
 }
 
 impl Finalize for JsWriteStream {}
@@ -104,15 +67,50 @@ impl JsWriteStream {
     }
 
     fn push_chunk(&self, chunk: String) -> bool {
-        self.writer.push(Ok(Some(chunk)))
+        let poll_wait = std::time::Duration::from_millis(100);
+        let mut attempts = 0;
+
+        loop {
+            match self.sender.try_send(Ok(chunk.clone())) {
+                Err(err) => match err {
+                    TrySendError::Full(_) => {
+                        attempts += 1;
+                        if attempts >= 50 {
+                            return false;
+                        }
+                        std::thread::sleep(poll_wait);
+                    }
+                    TrySendError::Closed(_) => {
+                        return false;
+                    }
+                },
+                Ok(_) => {
+                    return true;
+                }
+            }
+        }
     }
 
     fn end(&self) {
-        self.writer.push(Ok(None));
+        self.push_chunk("".to_string());
     }
 
     fn reject(&self, err: String) {
-        self.writer.release(err);
+        let poll_wait = std::time::Duration::from_millis(100 as u64);
+        let mut attempts = 0;
+
+        loop {
+            match self.sender.try_send(Err(CubeError::internal(err.clone()))) {
+                Err(TrySendError::Full(_)) => {
+                    attempts += 1;
+                    if attempts >= 50 {
+                        break;
+                    }
+                    std::thread::sleep(poll_wait);
+                }
+                _ => break,
+            }
+        }
     }
 }
 
@@ -158,37 +156,31 @@ pub fn call_js_with_stream_as_callback(
     channel: Arc<Channel>,
     js_method: Arc<Root<JsFunction>>,
     query: Option<String>,
-) -> Result<Arc<dyn CubeReadStream>, CubeError> {
-    let channel = channel;
-    let buffer = Arc::new(Buffer::new());
-    let writer = buffer.clone();
+) -> Result<Box<CubeReadStream>, CubeError> {
+    let (sender, receiver) = mpsc_channel::<Chunk>(100);
 
-    channel
-        .try_send(move |mut cx| {
-            // https://github.com/neon-bindings/neon/issues/672
-            let method = match Arc::try_unwrap(js_method) {
-                Ok(v) => v.into_inner(&mut cx),
-                Err(v) => v.as_ref().to_inner(&mut cx),
-            };
+    channel.send(move |mut cx| {
+        // https://github.com/neon-bindings/neon/issues/672
+        let method = match Arc::try_unwrap(js_method) {
+            Ok(v) => v.into_inner(&mut cx),
+            Err(v) => v.as_ref().to_inner(&mut cx),
+        };
 
-            let stream = JsWriteStream { writer };
+        let stream = JsWriteStream { sender };
 
-            let this = cx.undefined();
-            let args: Vec<Handle<_>> = vec![
-                if let Some(q) = query {
-                    cx.string(q).upcast::<JsValue>()
-                } else {
-                    cx.null().upcast::<JsValue>()
-                },
-                stream.to_object(&mut cx)?.upcast::<JsValue>(),
-            ];
-            method.call(&mut cx, this, args)?;
+        let this = cx.undefined();
+        let args: Vec<Handle<_>> = vec![
+            if let Some(q) = query {
+                cx.string(q).upcast::<JsValue>()
+            } else {
+                cx.null().upcast::<JsValue>()
+            },
+            stream.to_object(&mut cx)?.upcast::<JsValue>(),
+        ];
+        method.call(&mut cx, this, args)?;
 
-            Ok(())
-        })
-        .map_err(|err| {
-            CubeError::internal(format!("Unable to send js call via channel, err: {}", err))
-        })?;
+        Ok(())
+    });
 
-    Ok(buffer)
+    Ok(Box::new(StreamReader { receiver }))
 }

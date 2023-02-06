@@ -326,7 +326,7 @@ impl ExecutionPlan for CubeScanExecutionPlan {
 
         Ok(Box::pin(CubeScanStreamRouter::new(
             CubeScanMemoryStream::new(
-                Arc::new(CubeDummyStream {}),
+                Box::new(CubeDummyStream {}),
                 self.schema.clone(),
                 self.member_fields.clone(),
             ),
@@ -403,16 +403,15 @@ impl CubeScanOneShotStream {
 }
 
 struct CubeScanMemoryStream {
-    stream: Arc<dyn CubeReadStream>,
+    stream: Box<CubeReadStream>,
     /// Schema representing the data
     schema: SchemaRef,
     member_fields: Vec<MemberField>,
-    is_completed: bool,
 }
 
 impl CubeScanMemoryStream {
     pub fn new(
-        stream: Arc<dyn CubeReadStream>,
+        stream: Box<CubeReadStream>,
         schema: SchemaRef,
         member_fields: Vec<MemberField>,
     ) -> Self {
@@ -420,29 +419,14 @@ impl CubeScanMemoryStream {
             stream,
             schema,
             member_fields,
-            is_completed: false,
         }
     }
 
     fn poll_next(&mut self) -> Option<ArrowResult<RecordBatch>> {
-        match self.stream.poll_next() {
-            Ok(chunk) => {
-                let chunk = parse_chunk(chunk, self.schema.clone(), &self.member_fields);
-                if chunk.is_none() {
-                    self.is_completed = true;
-                }
-
-                chunk
-            }
-            Err(err) => Some(Err(ArrowError::ComputeError(err.to_string()))),
-        }
-    }
-}
-
-impl Drop for CubeScanMemoryStream {
-    fn drop(&mut self) {
-        if !self.is_completed {
-            self.stream.reject();
+        match self.stream.next() {
+            Some(Ok(chunk)) => parse_chunk(chunk, self.schema.clone(), &self.member_fields),
+            Some(Err(err)) => Some(Err(ArrowError::ComputeError(err.to_string()))),
+            None => None,
         }
     }
 }
@@ -593,22 +577,21 @@ fn load_to_stream_sync(one_shot_stream: &mut CubeScanOneShotStream) -> Result<()
 }
 
 fn parse_chunk(
-    chunk: Option<String>,
+    chunk: String,
     schema: SchemaRef,
     member_fields: &Vec<MemberField>,
 ) -> Option<ArrowResult<RecordBatch>> {
-    let res = match chunk {
-        Some(chunk) => match serde_json::from_str::<Vec<serde_json::Value>>(&chunk) {
-            Ok(data) => match transform_response(data, schema, member_fields) {
-                Ok(batch) => Some(Ok(batch)),
-                Err(err) => Some(Err(err.into())),
-            },
-            Err(e) => Some(Err(e.into())),
-        },
-        None => None,
-    };
+    if chunk.is_empty() {
+        return None;
+    }
 
-    res
+    match serde_json::from_str::<Vec<serde_json::Value>>(&chunk) {
+        Ok(data) => match transform_response(data, schema, member_fields) {
+            Ok(batch) => Some(Ok(batch)),
+            Err(err) => Some(Err(err.into())),
+        },
+        Err(e) => Some(Err(e.into())),
+    }
 }
 
 fn transform_response(
@@ -837,7 +820,7 @@ mod tests {
                 _query: V1LoadRequestQuery,
                 _ctx: AuthContextRef,
                 _meta_fields: LoadRequestMeta,
-            ) -> Result<Arc<dyn CubeReadStream>, CubeError> {
+            ) -> Result<Box<CubeReadStream>, CubeError> {
                 panic!("It's a fake transport");
             }
         }

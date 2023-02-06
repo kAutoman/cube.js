@@ -169,7 +169,7 @@ impl TransportService for NodeBridgeTransport {
         query: V1LoadRequestQuery,
         ctx: AuthContextRef,
         meta: LoadRequestMeta,
-    ) -> Result<Arc<dyn CubeReadStream>, CubeError> {
+    ) -> Result<Box<CubeReadStream>, CubeError> {
         trace!("[transport] Request ->");
 
         let native_auth = ctx

@@ -255,7 +255,7 @@ pub fn get_test_transport() -> Arc<dyn TransportService> {
             _query: V1LoadRequestQuery,
             _ctx: AuthContextRef,
             _meta_fields: LoadRequestMeta,
-        ) -> Result<Arc<dyn CubeReadStream>, CubeError> {
+        ) -> Result<Box<CubeReadStream>, CubeError> {
             panic!("It's a fake transport");
         }
     }
