@@ -701,10 +701,6 @@ impl RocksStore {
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
 
-        if running_count > 200 {
-            log::warn!("meta store running count {}", running_count);
-        }
-
         app_metrics::METASTORE_QUEUE.report(running_count);
         let started_at = SystemTime::now();
 
@@ -917,10 +913,6 @@ impl RocksStore {
         R: Send + Sync + 'static,
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
-
-        if running_count > 200 {
-            log::warn!("meta store running count {}", running_count);
-        }
 
         app_metrics::METASTORE_QUEUE.report(running_count);
         let started_at = SystemTime::now();
