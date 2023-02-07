@@ -472,7 +472,7 @@ impl SchedulerImpl {
             }
             ids.push(chunk.get_id());
         }
-        self.meta_store.deactivate_chunks_without_check(ids).await?;
+        self.meta_store.deactivate_chunks(ids).await?;
         log::info!(
             "schedule deactivating chunks without partition  completed {}",
             clen
