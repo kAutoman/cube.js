@@ -701,7 +701,6 @@ impl RocksStore {
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
 
-        app_metrics::METASTORE_QUEUE.report(running_count);
         let started_at = SystemTime::now();
 
         let db = self.db.clone();
@@ -714,9 +713,24 @@ impl RocksStore {
         let (tx, rx) = oneshot::channel::<Result<(R, Vec<MetaStoreEvent>), CubeError>>();
 
         let parent = tracing::Span::current();
+
+        let span_name = if let Some(meta) = parent.metadata() {
+            meta.name()
+        } else {
+            "undefined"
+        };
+
+        let server_name = self.config.server_name();
+        let host_name = server_name.split(":").next().unwrap_or("undefined");
+        let host_tag = format!("cube_host:{}", host_name);
+        let tags = vec![host_tag.clone(), format!("operation:{}", span_name)];
+        app_metrics::METASTORE_QUEUE.report_with_tags(running_count, Some(&vec![host_tag]));
+
         let inner_span = tracing::trace_span!(parent: &parent, "inner_write_operation");
+        let tags_to_move = tags.clone();
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
+                let started_at = SystemTime::now();
                 let db_span = warn_long("store write operation", Duration::from_millis(100));
                 let _p = parent;
                 let span_holder = inner_span.enter();
@@ -757,6 +771,10 @@ impl RocksStore {
 
                 mem::drop(span_holder);
                 mem::drop(db_span);
+                if let Ok(time) = started_at.elapsed() {
+                    app_metrics::METASTORE_INNER_WRITE_OPERATION
+                        .report_with_tags(time.as_millis() as i64, Some(&tags_to_move));
+                }
 
                 Ok(())
             }));
@@ -780,7 +798,8 @@ impl RocksStore {
             }
         }
         if let Ok(time) = started_at.elapsed() {
-            app_metrics::METASTORE_WRITE_OPERATION.report(time.as_millis() as i64);
+            app_metrics::METASTORE_WRITE_OPERATION
+                .report_with_tags(time.as_millis() as i64, Some(&tags));
         }
         Ok(spawn_res)
     }
@@ -914,7 +933,6 @@ impl RocksStore {
     {
         let (_running_lock, running_count) = CounterHolder::lock(self.running_count.clone());
 
-        app_metrics::METASTORE_QUEUE.report(running_count);
         let started_at = SystemTime::now();
 
         let mem_seq = MemorySequence::new(self.seq_store.clone());
@@ -925,9 +943,24 @@ impl RocksStore {
         let (tx, rx) = oneshot::channel::<Result<R, CubeError>>();
 
         let parent = tracing::Span::current();
+        let span_name = if let Some(meta) = parent.metadata() {
+            meta.name()
+        } else {
+            "undefined"
+        };
+
+        let server_name = self.config.server_name();
+        let host_name = server_name.split(":").next().unwrap_or("undefined");
+        let host_tag = format!("cube_host:{}", host_name);
+        let tags = vec![host_tag.clone(), format!("operation:{}", span_name)];
+
+        app_metrics::METASTORE_QUEUE.report_with_tags(running_count, Some(&vec![host_tag]));
+
         let inner_span = tracing::trace_span!(parent: &parent, "inner_metastore_read_operation");
+        let tags_to_move = tags.clone();
         cube_ext::spawn_blocking(move || {
             let res = rw_loop_sender.send(Box::new(move || {
+                let started_at = SystemTime::now();
                 let db_span = warn_long("metastore read operation", Duration::from_millis(100));
                 let _p = parent;
                 let span_holder = inner_span.enter();
@@ -950,6 +983,10 @@ impl RocksStore {
                 mem::drop(span_holder);
                 mem::drop(db_span);
 
+                if let Ok(time) = started_at.elapsed() {
+                    app_metrics::METASTORE_INNER_READ_OPERATION
+                        .report_with_tags(time.as_millis() as i64, Some(&tags_to_move));
+                }
                 Ok(())
             }));
             if let Err(e) = res {
@@ -964,7 +1001,8 @@ impl RocksStore {
             .await?;
 
         if let Ok(time) = started_at.elapsed() {
-            app_metrics::METASTORE_READ_OPERATION.report(time.as_millis() as i64);
+            app_metrics::METASTORE_READ_OPERATION
+                .report_with_tags(time.as_millis() as i64, Some(&tags));
         }
         res
     }
