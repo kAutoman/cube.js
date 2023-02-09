@@ -798,6 +798,10 @@ pub trait MetaStore: DIService + Send + Sync {
     fn partition_table(&self) -> PartitionMetaStoreTable;
     async fn create_partition(&self, partition: Partition) -> Result<IdRow<Partition>, CubeError>;
     async fn get_partition(&self, partition_id: u64) -> Result<IdRow<Partition>, CubeError>;
+    async fn get_partition_out_of_queue(
+        &self,
+        partition_id: u64,
+    ) -> Result<IdRow<Partition>, CubeError>;
     async fn get_partition_for_compaction(
         &self,
         partition_id: u64,
@@ -2253,6 +2257,17 @@ impl MetaStore for RocksMetaStore {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
+    async fn get_partition_out_of_queue(
+        &self,
+        partition_id: u64,
+    ) -> Result<IdRow<Partition>, CubeError> {
+        self.read_operation_out_of_queue(move |db_ref| {
+            PartitionRocksTable::new(db_ref).get_row_or_not_found(partition_id)
+        })
+        .await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self))]
     async fn get_partition_for_compaction(
         &self,
         partition_id: u64,
@@ -3189,7 +3204,6 @@ impl MetaStore for RocksMetaStore {
         let mut result = Vec::with_capacity(chunks.len());
 
         for chunk in chunks.into_iter() {
-            let _ = Self::test_chunk_serd(chunk.clone());
             let id_row = self
                 .write_operation(move |db_ref, batch_pipe| {
                     let rocks_chunk = ChunkRocksTable::new(db_ref.clone());
@@ -6187,18 +6201,6 @@ mod tests {
 }
 
 impl RocksMetaStore {
-    #[tracing::instrument(level = "trace", skip(row))]
-    fn test_chunk_serd(row: Chunk) -> Vec<u8> {
-        let start = SystemTime::now();
-        let mut ser = flexbuffers::FlexbufferSerializer::new();
-        row.serialize(&mut ser).unwrap();
-        let serialized_row = ser.take_buffer();
-        if let Ok(elapsed) = start.elapsed() {
-            app_metrics::TMP_CHUNK_SERD.report(elapsed.as_millis() as i64);
-        }
-        serialized_row
-    }
-
     fn swap_chunks_impl(
         deactivate_ids: Vec<u64>,
         uploaded_ids_and_sizes: Vec<(u64, Option<u64>)>,
