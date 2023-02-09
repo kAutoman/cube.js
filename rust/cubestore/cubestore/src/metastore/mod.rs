@@ -47,6 +47,7 @@ use crate::metastore::wal::{WALIndexKey, WALRocksIndex};
 
 use crate::table::{Row, TableValue};
 
+use crate::app_metrics;
 use crate::util::WorkerLoop;
 use crate::{meta_store_table_impl, CubeError};
 use arrow::datatypes::TimeUnit::Microsecond;
@@ -3185,18 +3186,21 @@ impl MetaStore for RocksMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self, chunks))]
     async fn insert_chunks(&self, chunks: Vec<Chunk>) -> Result<Vec<IdRow<Chunk>>, CubeError> {
-        self.write_operation(move |db_ref, batch_pipe| {
-            let rocks_chunk = ChunkRocksTable::new(db_ref.clone());
-            let mut result = Vec::with_capacity(chunks.len());
+        let mut result = Vec::with_capacity(chunks.len());
 
-            for chunk in chunks.into_iter() {
-                let id_row = rocks_chunk.insert(chunk, batch_pipe)?;
-                result.push(id_row);
-            }
+        for chunk in chunks.into_iter() {
+            let _ = Self::test_chunk_serd(chunk.clone());
+            let id_row = self
+                .write_operation(move |db_ref, batch_pipe| {
+                    let rocks_chunk = ChunkRocksTable::new(db_ref.clone());
+                    let id_row = rocks_chunk.insert(chunk, batch_pipe)?;
 
-            Ok(result)
-        })
-        .await
+                    Ok(id_row)
+                })
+                .await?;
+            result.push(id_row);
+        }
+        Ok(result)
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -6183,6 +6187,18 @@ mod tests {
 }
 
 impl RocksMetaStore {
+    #[tracing::instrument(level = "trace", skip(row))]
+    fn test_chunk_serd(row: Chunk) -> Vec<u8> {
+        let start = SystemTime::now();
+        let mut ser = flexbuffers::FlexbufferSerializer::new();
+        row.serialize(&mut ser).unwrap();
+        let serialized_row = ser.take_buffer();
+        if let Ok(elapsed) = start.elapsed() {
+            app_metrics::TMP_CHUNK_SERD.report(elapsed.as_millis() as i64);
+        }
+        serialized_row
+    }
+
     fn swap_chunks_impl(
         deactivate_ids: Vec<u64>,
         uploaded_ids_and_sizes: Vec<(u64, Option<u64>)>,
