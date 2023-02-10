@@ -1136,8 +1136,7 @@ impl ChunkStore {
             remaining_rows = remaining_rows_again;
         }
 
-        let mut chunks_to_create = Vec::new();
-        let mut data_for_upload = Vec::new();
+        let mut futures = Vec::new();
         let key_size = index.get_row().sort_key_size() as usize;
         for partition in partitions.into_iter() {
             let min = partition.get_row().get_min_val().as_ref();
@@ -1170,15 +1169,12 @@ impl ChunkStore {
                     .collect::<Result<Vec<_>, _>>()?;
                 let columns = self.post_process_columns(index.clone(), columns).await?;
 
-                let (min, max) = min_max_values_from_data(&columns, key_size);
-                chunks_to_create.push(Chunk::new(
-                    partition.get_id(),
-                    columns[0].len(),
-                    min,
-                    max,
+                futures.push(self.add_chunk_columns(
+                    index.clone(),
+                    partition.clone(),
+                    columns,
                     in_memory,
                 ));
-                data_for_upload.push((partition, columns))
             }
             remaining_rows = next;
         }
@@ -1193,23 +1189,6 @@ impl ChunkStore {
             .await?;
             return Err(CubeError::internal(error_message));
         }
-
-        let chunks = self.meta_store.insert_chunks(chunks_to_create).await?;
-        if chunks.len() != data_for_upload.len() {
-            return Err(CubeError::internal(format!(
-                "Chunks count {} don't match data_for_upload count {}",
-                chunks.len(),
-                data_for_upload.len()
-            )));
-        }
-
-        let futures = chunks
-            .into_iter()
-            .zip(data_for_upload.into_iter())
-            .map(|(chunk, (partition, columns))| {
-                self.upload_chunk_columns(chunk, index.clone(), partition, columns, in_memory)
-            })
-            .collect::<Vec<_>>();
 
         let new_chunks = join_all(futures)
             .await
