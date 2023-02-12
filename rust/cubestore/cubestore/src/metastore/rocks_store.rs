@@ -1017,6 +1017,18 @@ impl RocksStore {
 
         let started_at = SystemTime::now();
 
+        let parent = tracing::Span::current();
+        let span_name = if let Some(meta) = parent.metadata() {
+            meta.name()
+        } else {
+            "undefined"
+        };
+
+        let server_name = self.config.server_name();
+        let host_name = server_name.split(":").next().unwrap_or("undefined");
+        let host_tag = format!("cube_host:{}", host_name);
+        let tags = vec![host_tag.clone(), format!("operation:{}", span_name)];
+
         let res = cube_ext::spawn_blocking(move || {
             let db_span = warn_long(
                 "metastore read operation out of queue",
@@ -1043,7 +1055,8 @@ impl RocksStore {
         .await?;
 
         if let Ok(time) = started_at.elapsed() {
-            app_metrics::METASTORE_READ_OUT_QUEUE_OPERATION.report(time.as_millis() as i64);
+            app_metrics::METASTORE_READ_OUT_QUEUE_OPERATION
+                .report_with_tags(time.as_millis() as i64, Some(&tags));
         }
         res
     }
